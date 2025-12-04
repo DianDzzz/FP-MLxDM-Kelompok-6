@@ -11,6 +11,8 @@ Ferri Adi Prasetya - 5054241019
 
 - Sumber Jurnal Penelitian Sebelumnya
 
+https://www.ijrrjournal.com/IJRR_Vol.12_Issue.5_May2025/IJRR35.pdf (Jurnal Utama, Performa murid berdasarkan kehadiran berbasis absen biometric)
+
 https://www.researchgate.net/profile/Miriam-Bergado/publication/366498406_FRAUD_DETECTION_USING_ISOLATION_FOREST_FOR_RFID-BASED_ATTENDANCE_MONITORING_SYSTEM/links/63a3e76ce3ff99050d8e557b/FRAUD-DETECTION-USING-ISOLATION-FOREST-FOR-RFID-BASED-ATTENDANCE-MONITORING-SYSTEM.pdf (fraud detection)
 
 https://ieeexplore.ieee.org/abstract/document/10717244 (random forest)
