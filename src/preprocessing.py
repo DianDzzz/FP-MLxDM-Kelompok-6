@@ -4,54 +4,87 @@ from datetime import datetime, time
 from sklearn.ensemble import IsolationForest
 from .helper import _to_minutes
 
-def apply_anomaly_detection(df, contamination=0.01, random_state=42):
+def apply_anomaly_detection(df, contamination=0.05, random_state=42):
     """
-    Apply Isolation Forest to detect anomalies in checkin/checkout duration.
-    This should be applied BEFORE feature engineering to clean the data.
+    Apply Isolation Forest to detect anomalies AFTER feature engineering.
+    Uses engineered features for better anomaly detection.
+    
+    Should be called AFTER add_temporal_and_lag_features() to preserve
+    timeseries integrity during feature calculation.
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with engineered features (output of add_temporal_and_lag_features)
+    contamination : float, default=0.05
+        Expected proportion of anomalies
+    random_state : int, default=42
+        Random seed for reproducibility
+    
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with anomalies removed
     """
     print("--- Anomaly Detection (Isolation Forest) ---")
     
-    # Calculate duration (hours) for anomaly detection
-    # Fill missing checkout with a heuristic (e.g., end of school day) or just use 0/negative for anomaly 
-    # Here we focus on data that HAS checkout time for duration a   nomalies
-    # And checkin_time anomalies (e.g. 2 AM checkin)
-    
     df_iso = df.copy()
-
-    # convert to datetime if not already
+    
+    # Ensure datetime columns
     df_iso['checkin_time'] = pd.to_datetime(df_iso['checkin_time'], errors='coerce')
     df_iso['checkout_time'] = pd.to_datetime(df_iso['checkout_time'], errors='coerce')
-    df_iso['date'] = pd.to_datetime(df_iso['date'], errors='coerce')
     
-    # Feature 1: Duration
-    # Handle NaN checkout for duration calc (set to checkin time -> duration 0)
-    # This is temporary just for anomaly scoring
+    # Feature 1: Duration (hours)
     temp_checkout = df_iso['checkout_time'].fillna(df_iso['checkin_time'])
-    df_iso['duration_hours'] = (temp_checkout - df_iso['checkin_time']).dt.total_seconds() / 3600
+    df_iso['_duration_hours'] = (temp_checkout - df_iso['checkin_time']).dt.total_seconds() / 3600
     
-    # Feature 2: Arrival Hour (Decimal)
-    df_iso['arrival_hour'] = df_iso['checkin_time'].dt.hour + df_iso['checkin_time'].dt.minute/60
+    # Feature 2: Arrival Hour (decimal)
+    df_iso['_arrival_hour'] = df_iso['checkin_time'].dt.hour + df_iso['checkin_time'].dt.minute / 60
     
-    # Select features for isolation forest
-    # Drop rows where checkin_time is NaT (e.g. Absent) because they are not "sensor anomalies"
-    # They are valid "Absent" data.
+    # Features for anomaly detection - use engineered features too
+    anomaly_features = ['_duration_hours', '_arrival_hour']
+    
+    # Add engineered features if available
+    if 'Count_Telat_7D' in df_iso.columns:
+        anomaly_features.append('Count_Telat_7D')
+    if 'Count_Alpa_30D' in df_iso.columns:
+        anomaly_features.append('Count_Alpa_30D')
+    if 'Streak_Telat' in df_iso.columns:
+        anomaly_features.append('Streak_Telat')
+    if 'Avg_Arrival_Time_7D' in df_iso.columns:
+        anomaly_features.append('Avg_Arrival_Time_7D')
+    
+    # Only process rows with valid checkin (not absent/holiday)
     mask_valid = df_iso['checkin_time'].notna()
-    X_iso = df_iso.loc[mask_valid, ['duration_hours', 'arrival_hour']].fillna(0)
+    X_iso = df_iso.loc[mask_valid, anomaly_features].fillna(0)
     
     if len(X_iso) > 0:
         iso = IsolationForest(contamination=contamination, random_state=random_state)
         preds = iso.fit_predict(X_iso)
         
-        # Mark anomalies (-1)
+        # Get anomaly indices
         anom_indices = X_iso[preds == -1].index
         
-        print(f"Total data valid (checkin ada): {len(X_iso)}")
-        print(f"Terdeteksi {len(anom_indices)} anomali teknis. Contoh:")
-        print(df_iso.loc[anom_indices, ['checkin_time', 'checkout_time', 'duration_hours']].head())
+        print(f"Features used: {anomaly_features}")
+        print(f"Total data dengan checkin: {len(X_iso)}")
+        print(f"Anomali terdeteksi: {len(anom_indices)} ({len(anom_indices)/len(X_iso)*100:.2f}%)")
         
-        # Remove anomalies from original df
-        df_clean = df.drop(anom_indices)
-        print(f"Data setelah pembersihan anomali: {len(df_clean)}")
+        if len(anom_indices) > 0:
+            print(f"\nContoh anomali:")
+            display_cols = ['rfid_tag', 'date', 'checkin_time', 'note', '_duration_hours', '_arrival_hour']
+            display_cols = [c for c in display_cols if c in df_iso.columns]
+            print(df_iso.loc[anom_indices, display_cols].head(10).to_string())
+        
+        # Remove anomalies
+        df_clean = df.drop(anom_indices).copy()
+        
+        # Drop temporary columns
+        temp_cols = ['_duration_hours', '_arrival_hour']
+        df_clean = df_clean.drop(columns=[c for c in temp_cols if c in df_clean.columns], errors='ignore')
+        
+        print(f"\nData sebelum: {len(df)} baris")
+        print(f"Data setelah: {len(df_clean)} baris")
+        
         return df_clean
     else:
         print("Tidak ada data valid untuk deteksi anomali.")
@@ -140,3 +173,58 @@ def add_temporal_and_lag_features(df):
     result_final = result_final.sort_values(by='id', ascending=False).reset_index(drop=True)
     
     return result_final
+
+
+def remove_low_attendance_students(df, threshold_pct=10.0):
+    """
+    Remove students (rfid_tag) with attendance percentage below threshold.
+    This preserves timeseries integrity by removing entire student records.
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with columns: rfid_tag, checkin_time, note
+    threshold_pct : float, default=10.0
+        Minimum attendance percentage to keep student. 
+        Students with attendance < threshold will be removed.
+    
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with low-attendance students removed
+    """
+    print(f"--- Removing Low Attendance Students (< {threshold_pct}%) ---")
+    
+    df_temp = df.copy()
+    
+    # Calculate attendance per student
+    df_temp['is_hadir'] = df_temp['checkin_time'].notna()
+    
+    student_stats = df_temp.groupby('rfid_tag').agg(
+        total_records=('rfid_tag', 'count'),
+        total_hadir=('is_hadir', 'sum')
+    ).reset_index()
+    
+    student_stats['pct_hadir'] = (student_stats['total_hadir'] / student_stats['total_records'] * 100).round(2)
+    
+    # Identify outlier students (attendance < threshold)
+    outlier_students = student_stats[student_stats['pct_hadir'] < threshold_pct]['rfid_tag'].tolist()
+    normal_students = student_stats[student_stats['pct_hadir'] >= threshold_pct]['rfid_tag'].tolist()
+    
+    print(f"Total siswa: {len(student_stats)}")
+    print(f"Siswa dengan kehadiran < {threshold_pct}%: {len(outlier_students)}")
+    print(f"Siswa yang dipertahankan: {len(normal_students)}")
+    
+    if len(outlier_students) > 0:
+        print(f"\nContoh siswa outlier yang dihapus:")
+        outlier_details = student_stats[student_stats['rfid_tag'].isin(outlier_students)].head(10)
+        print(outlier_details.to_string(index=False))
+    
+    # Remove outlier students
+    df_clean = df[df['rfid_tag'].isin(normal_students)].copy()
+    
+    print(f"\nData sebelum: {len(df)} baris")
+    print(f"Data setelah: {len(df_clean)} baris")
+    print(f"Baris dihapus: {len(df) - len(df_clean)}")
+    
+    return df_clean
