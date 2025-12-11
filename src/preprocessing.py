@@ -103,13 +103,15 @@ def add_temporal_and_lag_features(df):
         
         # Shift 1: Status Kemarin
         g['Lag_1_Status'] = g['note'].shift(1)
+        g['Lag_1_Status'] = g['Lag_1_Status'].fillna('alpa')
+        g['Lag_1_Status'] = g['Lag_1_Status'].replace('libur', 'alpa')
         
         # Rolling Count (7 hari kalender ke belakang)
         g['Count_Telat_7D'] = g['is_late'].rolling('7d', closed='left').sum().fillna(0).astype(int)
         g['Count_Alpa_30D'] = g['is_absent'].rolling('30d', closed='left').sum().fillna(0).astype(int)
         
         # Avg Arrival Time
-        g['Avg_Arrival_Time_7D'] = g['_arrival_min'].rolling('7d', closed='left').mean()
+        g['Avg_Arrival_Time_7D'] = g['_arrival_min'].rolling('7d', closed='left').mean().fillna(0)
         
         # Streak Calculation
         streak_mask = g['is_late'] == 1
